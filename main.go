@@ -19,8 +19,10 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-// Time before MFA step times out
-const MFA_TIMEOUT = 30
+const (
+	MfaTimeoutSeconds = 60
+	ssoCookiePath     = "/.headless-sso-new"
+)
 
 var cfg = yacspin.Config{
 	Frequency:         100 * time.Millisecond,
@@ -40,7 +42,7 @@ var spinner, _ = yacspin.New(cfg)
 func main() {
 	spinner.Start()
 	url := getURL()
-	login_new(url)
+	loginNew(url)
 }
 
 // returns sso url from stdin.
@@ -64,7 +66,7 @@ func getURL() string {
 	return url
 }
 
-func login_new(url string) {
+func loginNew(url string) {
 	spinner.Message(color.MagentaString("init headless-browser \n"))
 	spinner.Pause()
 
@@ -76,20 +78,12 @@ func login_new(url string) {
 	page := p.Context(ctx)
 
 	go func() {
-		time.Sleep(1 * time.Minute)
+		time.Sleep(MfaTimeoutSeconds * time.Second)
 		cancel()
 	}()
 
-	// Google part
+	defer browser.MustClose()
 	page.MustWaitStable().MustScreenshot("sso1.png")
-	r, err2 := page.ElementR("button", "Confirm and continue")
-	if err2 != nil {
-		fmt.Println("didn't find the button")
-	} else {
-		fmt.Println("don't need the rest of steps, cookies are stored")
-		r.MustClick()
-		page.MustWaitStable().MustScreenshot("sso1.png")
-	}
 
 	page.MustElement("#identifierId").MustWaitVisible().MustInput("adolfo@timescale.com")
 	page.MustElement("#identifierNext").MustWaitEnabled().MustClick()
@@ -98,10 +92,9 @@ func login_new(url string) {
 	page.MustWaitStable().MustScreenshot("sso2.png")
 	page.MustElement(`input[type="password"]`).MustWaitVisible().MustInput("Wolverhampton1")
 	page.MustElement("#passwordNext").MustWaitEnabled().MustClick()
-
 	page.MustWaitStable().MustScreenshot("sso3.png")
 
-	page.MustElementR("div", "Google Authenticator").MustClick()
+	page.MustElementR("div", "Google Authenticator").MustWaitEnabled().MustClick()
 	page.MustWaitStable().MustScreenshot("sso4.png")
 
 	// otp is an alias to a command using a tool that generates one time passwords, totp timescale in my case.
@@ -109,7 +102,7 @@ func login_new(url string) {
 	cmd.Stdout = builder
 	err := cmd.Run()
 	if err != nil {
-		panic(fmt.Sprintf("could not run otp command, %s", err))
+		printPanic(fmt.Sprintf("could not run otp command, %s", err))
 	}
 
 	page.MustElement(`input[type="tel"]`).MustWaitVisible().MustInput(builder.String())
@@ -118,12 +111,11 @@ func login_new(url string) {
 	page.MustWaitStable().MustScreenshot("sso5.png")
 
 	// AWS part
-	page.MustElement("#cli_verification_btn").MustClick()
-	page.MustWaitStable().MustScreenshot("sso6.png")
+	page.MustElementR("button", "Confirm and continue").MustClick()
+	page.MustWaitStable().MustScreenshot("ssoPreFinal.png")
 
-	debugPageElements(page)
-
-	defer browser.MustClose()
+	page.MustElementR("button", "Allow access").MustWaitEnabled().MustClick()
+	page.MustWaitStable().MustScreenshot("ssoFinal.png")
 
 	saveCookies(*browser)
 }
@@ -131,15 +123,18 @@ func login_new(url string) {
 // load cookies
 func loadCookies(browser rod.Browser) {
 	spinner.Message("loading cookies")
-	dirname, err := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		error(err.Error())
+		printError(err.Error())
 	}
 
-	data, _ := os.ReadFile(dirname + "/.headless-sso")
+	data, _ := os.ReadFile(homeDir + ssoCookiePath)
 	sEnc, _ := b64.StdEncoding.DecodeString(string(data))
 	var cookie *proto.NetworkCookie
-	json.Unmarshal(sEnc, &cookie)
+	err = json.Unmarshal(sEnc, &cookie)
+	if err != nil {
+		printError(err.Error())
+	}
 
 	if cookie != nil {
 		browser.MustSetCookies(cookie)
@@ -148,9 +143,9 @@ func loadCookies(browser rod.Browser) {
 
 // save authn cookie
 func saveCookies(browser rod.Browser) {
-	dirname, err := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		error(err.Error())
+		printError(err.Error())
 	}
 
 	cookies := browser.MustGetCookies()
@@ -159,11 +154,11 @@ func saveCookies(browser rod.Browser) {
 		if cookie.Name == "x-amz-sso_authn" {
 			data, _ := json.Marshal(cookie)
 
-			sEnc := b64.StdEncoding.EncodeToString([]byte(data))
-			err = os.WriteFile(dirname+"/.headless-sso", []byte(sEnc), 0644)
+			sEnc := b64.StdEncoding.EncodeToString(data)
+			err = os.WriteFile(homeDir+ssoCookiePath, []byte(sEnc), 0644)
 
 			if err != nil {
-				error("Failed to save x-amz-sso_authn cookie")
+				printError("Failed to save x-amz-sso_authn cookie")
 			}
 			break
 		}
@@ -171,7 +166,7 @@ func saveCookies(browser rod.Browser) {
 }
 
 // print error message and exit
-func panic(errorMsg string) {
+func printPanic(errorMsg string) {
 	red := color.New(color.FgRed).SprintFunc()
 	spinner.StopFailMessage(red("Login failed error - " + errorMsg))
 	spinner.StopFail()
@@ -179,7 +174,7 @@ func panic(errorMsg string) {
 }
 
 // print error message
-func error(errorMsg string) {
+func printError(errorMsg string) {
 	yellow := color.New(color.FgYellow).SprintFunc()
 	spinner.Message("Warn: " + yellow(errorMsg))
 }
