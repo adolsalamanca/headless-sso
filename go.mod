@@ -1,12 +1,14 @@
 module github.com/mziyabo/headless-sso
 
-go 1.17
+go 1.21
+
+toolchain go1.23.1
 
 require (
 	github.com/fatih/color v1.13.0
 	github.com/gen2brain/beeep v0.0.0-20220518085355-d7852edf42fc
 	github.com/git-lfs/go-netrc v0.0.0-20210914205454-f0c862dd687a
-	github.com/go-rod/rod v0.105.1
+	github.com/go-rod/rod v0.116.2
 )
 
 require (
@@ -16,6 +18,8 @@ require (
 	github.com/nu7hatch/gouuid v0.0.0-20131221200532-179d4d0c4d8d // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/tadvi/systray v0.0.0-20190226123456-11a2b8fa57af // indirect
+	github.com/ysmood/fetchup v0.3.0 // indirect
+	github.com/ysmood/got v0.40.0 // indirect
 )
 
 require (
@@ -23,7 +27,7 @@ require (
 	github.com/mattn/go-isatty v0.0.14 // indirect
 	github.com/theckman/yacspin v0.13.12
 	github.com/ysmood/goob v0.4.0 // indirect
-	github.com/ysmood/gson v0.7.1 // indirect
-	github.com/ysmood/leakless v0.7.0 // indirect
+	github.com/ysmood/gson v0.7.3 // indirect
+	github.com/ysmood/leakless v0.9.0 // indirect
 	golang.org/x/sys v0.0.0-20220818161305-2296e01440c6 // indirect
 )

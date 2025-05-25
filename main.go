@@ -5,20 +5,17 @@ import (
 	"context"
 	b64 "encoding/base64"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"os"
-	"os/user"
-	"path/filepath"
+	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/fatih/color"
-	"github.com/gen2brain/beeep"
-	"github.com/git-lfs/go-netrc/netrc"
 	"github.com/theckman/yacspin"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -42,14 +39,8 @@ var spinner, _ = yacspin.New(cfg)
 
 func main() {
 	spinner.Start()
-
-	// get sso url from stdin
 	url := getURL()
-	// start aws sso login
-	ssoLogin(url)
-
-	spinner.Stop()
-	time.Sleep(1 * time.Second)
+	login_new(url)
 }
 
 // returns sso url from stdin.
@@ -68,89 +59,73 @@ func getURL() string {
 		}
 	}
 
+	fmt.Printf("url: %s\n", url)
+
 	return url
 }
 
-// get aws credentials from netrc file
-func getCredentials() (string, string) {
-	spinner.Message("fetching credentials from .netrc")
-
-	usr, _ := user.Current()
-	f, err := netrc.ParseFile(filepath.Join(usr.HomeDir, ".netrc"))
-	if err != nil {
-		panic(".netrc file not found in HOME directory")
-	}
-
-	username := f.FindMachine("headless-sso", "").Login
-	passphrase := f.FindMachine("headless-sso", "").Password
-
-	return username, passphrase
-}
-
-// login with hardware MFA
-func ssoLogin(url string) {
-	username, passphrase := getCredentials()
+func login_new(url string) {
 	spinner.Message(color.MagentaString("init headless-browser \n"))
 	spinner.Pause()
-	browser := rod.New().MustConnect().Trace(false)
+
+	browser := rod.New().MustConnect().NoDefaultDevice()
 	loadCookies(*browser)
-	defer browser.MustClose()
-	
-	err := rod.Try(func() {
-		page := browser.MustPage(url)
-		
-		// authorize
-		spinner.Unpause()
-		spinner.Message("logging in")
-		page.MustElementR("button", "Next").MustWaitEnabled().MustPress()
 
-		// sign-in
-		page.Race().ElementR("button", "Allow").MustHandle(func(e *rod.Element) {
-		}).Element("#awsui-input-0").MustHandle(func(e *rod.Element) {
-			signIn(*page, username, passphrase)
-			// mfa required step
-			mfa(*page)
-		}).MustDo()
+	p := browser.MustPage(url).MustWindowFullscreen()
+	ctx, cancel := context.WithCancel(context.Background())
+	page := p.Context(ctx)
 
-		// allow request
-		unauthorized := true
-		for unauthorized {
+	go func() {
+		time.Sleep(1 * time.Minute)
+		cancel()
+	}()
 
-			txt := page.Timeout(MFA_TIMEOUT * time.Second).MustElement(".awsui-util-mb-s").MustWaitLoad().MustText()
-			if txt == "Request approved" {
-				unauthorized = false
-			} else {
-				exists, _, _ := page.HasR("button", "Allow")
-				if exists {
-					page.MustWaitLoad().MustElementR("button", "Allow").MustClick()
-				}
-
-				time.Sleep(500 * time.Millisecond)
-			}
-		}
-
-		saveCookies(*browser)
-	})
-
-	if errors.Is(err, context.DeadlineExceeded) {
-		panic("Timed out waiting for MFA")
-	} else if err != nil {
-		panic(err.Error())
+	// Google part
+	page.MustWaitStable().MustScreenshot("sso1.png")
+	r, err2 := page.ElementR("button", "Confirm and continue")
+	if err2 != nil {
+		fmt.Println("didn't find the button")
+	} else {
+		fmt.Println("don't need the rest of steps, cookies are stored")
+		r.MustClick()
+		page.MustWaitStable().MustScreenshot("sso1.png")
 	}
-}
 
-// executes aws sso signin step
-func signIn(page rod.Page, username, passphrase string) {
-	page.MustElement("#awsui-input-0").MustInput(username).MustPress(input.Enter)
-	page.MustElement("#awsui-input-1").MustInput(passphrase).MustPress(input.Enter)
-}
+	page.MustElement("#identifierId").MustWaitVisible().MustInput("adolfo@timescale.com")
+	page.MustElement("#identifierNext").MustWaitEnabled().MustClick()
 
-// TODO: allow user to enter MFA Code
-func mfa(page rod.Page) {
-	_ = beeep.Notify("headless-sso", "Touch U2F device to proceed with authenticating AWS SSO", "")
-	_ = beeep.Beep(beeep.DefaultFreq, beeep.DefaultDuration)
+	// page.MustElementR("button", "Next").MustClick()
+	page.MustWaitStable().MustScreenshot("sso2.png")
+	page.MustElement(`input[type="password"]`).MustWaitVisible().MustInput("Wolverhampton1")
+	page.MustElement("#passwordNext").MustWaitEnabled().MustClick()
 
-	spinner.Message(color.YellowString("Touch U2F"))
+	page.MustWaitStable().MustScreenshot("sso3.png")
+
+	page.MustElementR("div", "Google Authenticator").MustClick()
+	page.MustWaitStable().MustScreenshot("sso4.png")
+
+	// otp is an alias to a command using a tool that generates one time passwords, totp timescale in my case.
+	cmd, builder := exec.Command("/usr/local/bin/totp", "timescale"), new(strings.Builder)
+	cmd.Stdout = builder
+	err := cmd.Run()
+	if err != nil {
+		panic(fmt.Sprintf("could not run otp command, %s", err))
+	}
+
+	page.MustElement(`input[type="tel"]`).MustWaitVisible().MustInput(builder.String())
+	page.MustElement("#totpNext").MustWaitEnabled().MustClick()
+
+	page.MustWaitStable().MustScreenshot("sso5.png")
+
+	// AWS part
+	page.MustElement("#cli_verification_btn").MustClick()
+	page.MustWaitStable().MustScreenshot("sso6.png")
+
+	debugPageElements(page)
+
+	defer browser.MustClose()
+
+	saveCookies(*browser)
 }
 
 // load cookies
@@ -178,7 +153,7 @@ func saveCookies(browser rod.Browser) {
 		error(err.Error())
 	}
 
-	cookies := (browser.MustGetCookies())
+	cookies := browser.MustGetCookies()
 
 	for _, cookie := range cookies {
 		if cookie.Name == "x-amz-sso_authn" {
@@ -207,4 +182,53 @@ func panic(errorMsg string) {
 func error(errorMsg string) {
 	yellow := color.New(color.FgYellow).SprintFunc()
 	spinner.Message("Warn: " + yellow(errorMsg))
+}
+
+func debugPageElements(page *rod.Page) {
+	fmt.Println("=== PAGE ELEMENT DEBUG ===")
+
+	// Take a screenshot first
+	page.MustScreenshot("debug_current_page.png")
+	fmt.Println("Screenshot saved as debug_current_page.png")
+
+	// Get page title and URL
+	fmt.Printf("Page Title: %s\n", page.MustInfo().Title)
+	fmt.Printf("Page URL: %s\n", page.MustInfo().URL)
+
+	// Find all form-related elements
+	formElements := page.MustElements("input, button, select, textarea")
+	fmt.Printf("\nFound %d form elements total\n", len(formElements))
+
+	for i, el := range formElements {
+		tagName := el.MustEval("() => this.tagName").String()
+		fmt.Printf("\n--- Element %d (%s) ---\n", i, tagName)
+
+		// Common attributes for all elements
+		attrs := []string{"id", "name", "class", "type", "placeholder", "aria-label", "value"}
+		for _, attr := range attrs {
+			if val, err := el.Attribute(attr); err == nil && val != nil && *val != "" {
+				fmt.Printf("%s: %s\n", attr, *val)
+			}
+		}
+
+		// Get text content
+		text := el.MustText()
+		if text != "" {
+			fmt.Printf("Text: '%s'\n", text)
+		}
+
+		// Get visibility and position info
+		visible := el.MustVisible()
+		fmt.Printf("Visible: %t\n", visible)
+
+		if visible {
+			box := el.MustShape().Box()
+			fmt.Printf("Position: x=%f, y=%f, width=%f, height=%f\n",
+				box.X, box.Y, box.Width, box.Height)
+		}
+
+		// Get the HTML
+		html, _ := el.HTML()
+		fmt.Printf("HTML: %s\n", html)
+	}
 }
