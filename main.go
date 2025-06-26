@@ -42,32 +42,52 @@ var spinner, _ = yacspin.New(cfg)
 func main() {
 	// TODO: Try the step Confirm and Continue at start, might be already the required one.
 	spinner.Start()
-	url := getURL()
+
+	user := os.Getenv("username")
+	password := os.Getenv("password")
+	if user == "" || password == "" {
+		printPanic("empty username or password")
+	}
+
+	url := startSso()
+
 	loginNew(url)
 }
 
-// returns sso url from stdin.
-func getURL() string {
-	spinner.Message("reading url from stdin")
+func startSso() string {
+	cmd := exec.Command("/usr/local/bin/aws", "sso", "login", "--no-browser")
 
-	scanner := bufio.NewScanner(os.Stdin)
-	url := ""
-	for url == "" {
-		scanner.Scan()
-		t := scanner.Text()
-		r, _ := regexp.Compile("^https.*user_code=([A-Z]{4}-?){2}")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		printPanic(fmt.Sprintf("could not create stdout pipe: %s", err))
+	}
 
-		if r.MatchString(t) {
-			url = t
+	if err := cmd.Start(); err != nil {
+		printPanic(fmt.Sprintf("could not start aws command: %s", err))
+	}
+
+	urlRegex := regexp.MustCompile(`https://[^\s]+user_code=[A-Z]{4}-[A-Z]{4}`)
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fmt.Println(line)
+
+		if url := urlRegex.FindString(line); url != "" {
+			fmt.Printf("url: %s\n", url)
+			return url
 		}
 	}
 
-	fmt.Printf("url: %s\n", url)
+	if err := cmd.Wait(); err != nil {
+		printPanic(fmt.Sprintf("aws command failed: %s", err))
+	}
 
-	return url
+	printPanic("no SSO URL found in command output")
+	return ""
 }
 
 func loginNew(url string) {
+
 	spinner.Message(color.MagentaString("init headless-browser \n"))
 	spinner.Pause()
 
@@ -99,7 +119,7 @@ func loginNew(url string) {
 	page.MustWaitStable().MustScreenshot("sso3.png")
 
 	// otp is an alias to a command using a tool that generates one time passwords, totp timescale in my case.
-	builder := new(strings.Builder)
+	builder := &strings.Builder{}
 	cmd := exec.Command("/usr/local/bin/totp", "timescale")
 	cmd.Stdout = builder
 	err := cmd.Run()
