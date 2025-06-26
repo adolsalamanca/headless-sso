@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	MfaTimeoutSeconds = 60
-	ssoCookiePath     = "/.headless-sso-new"
+	MfaTimeoutSeconds = 90
+	ssoCookiePath     = "/.headless-sso"
 )
 
 var cfg = yacspin.Config{
@@ -40,6 +40,7 @@ var cfg = yacspin.Config{
 var spinner, _ = yacspin.New(cfg)
 
 func main() {
+	// TODO: Try the step Confirm and Continue at start, might be already the required one.
 	spinner.Start()
 	url := getURL()
 	loginNew(url)
@@ -84,33 +85,35 @@ func loginNew(url string) {
 
 	defer browser.MustClose()
 	page.MustWaitStable().MustScreenshot("sso1.png")
-
+	// Google Auth
 	page.MustElement("#identifierId").MustWaitVisible().MustInput("adolfo@timescale.com")
 	page.MustElement("#identifierNext").MustWaitEnabled().MustClick()
 
-	// page.MustElementR("button", "Next").MustClick()
 	page.MustWaitStable().MustScreenshot("sso2.png")
 	page.MustElement(`input[type="password"]`).MustWaitVisible().MustInput("Wolverhampton1")
 	page.MustElement("#passwordNext").MustWaitEnabled().MustClick()
-	page.MustWaitStable().MustScreenshot("sso3.png")
 
 	page.MustElementR("div", "Google Authenticator").MustWaitEnabled().MustClick()
-	page.MustWaitStable().MustScreenshot("sso4.png")
+	page.MustWaitStable().MustScreenshot("sso3.png")
 
 	// otp is an alias to a command using a tool that generates one time passwords, totp timescale in my case.
-	cmd, builder := exec.Command("/usr/local/bin/totp", "timescale"), new(strings.Builder)
+	builder := new(strings.Builder)
+	cmd := exec.Command("/usr/local/bin/totp", "timescale")
 	cmd.Stdout = builder
 	err := cmd.Run()
 	if err != nil {
 		printPanic(fmt.Sprintf("could not run otp command, %s", err))
 	}
 
+	debugPageElements(page)
+
 	page.MustElement(`input[type="tel"]`).MustWaitVisible().MustInput(builder.String())
 	page.MustElement("#totpNext").MustWaitEnabled().MustClick()
 
-	page.MustWaitStable().MustScreenshot("sso5.png")
+	// Insert otp
+	page.MustWaitStable().MustScreenshot("sso4.png")
 
-	// AWS part
+	// AWS confirmation
 	page.MustElementR("button", "Confirm and continue").MustClick()
 	page.MustWaitStable().MustScreenshot("ssoPreFinal.png")
 
